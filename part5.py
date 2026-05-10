@@ -7,7 +7,6 @@ Implements and evaluates four retrieval systems:
   2. BM25 ranking
   3. Latent Semantic Analysis (LSA) via truncated SVD
   4. Query Expansion via WordNet  (from part5_ideas.tex)
-  5. Pseudo-Relevance Feedback / Rocchio (additional approach)
 
 Run:
     python part5.py
@@ -48,10 +47,6 @@ BM25_B    = 0.75
 LSA_DIMS  = [50, 100, 200, 300]
 
 QE_LAMBDA = 0.5 # synonym weight discount factor
-
-PRF_TOPK  = 5 # pseudo-relevant docs for Rocchio
-PRF_ALPHA = 1.0 # original query weight
-PRF_BETA  = 0.75 # pseudo-relevant centroid weight
 
 os.makedirs(OUT_DIR, exist_ok=True)
 os.makedirs(os.path.join(OUT_DIR, "figures"), exist_ok=True)
@@ -295,86 +290,6 @@ class QueryExpansionRetrieval:
             results.append([d for _, d in scores])
         return results
 
-# Rocchio pseudo-relevance feedback.
-class PseudoRelevanceFeedback:
-    """
-    Rocchio pseudo-relevance feedback.
-
-    Step 1: retrieve top-K documents with baseline TF-IDF.
-    Step 2: build an expanded query vector:
-            q_new = alpha * q_orig + beta * centroid(top_K docs)
-    Step 3: re-rank with the expanded query.
-
-    This addresses vocabulary mismatch by using corpus evidence
-    rather than an external lexical resource.
-    """
-
-    def __init__(self, top_k=PRF_TOPK, alpha=PRF_ALPHA, beta=PRF_BETA):
-        self.top_k = top_k
-        self.alpha = alpha
-        self.beta  = beta
-        self.ir    = InformationRetrieval()
-
-    def buildIndex(self, docs, doc_ids):
-        self.ir.buildIndex(docs, doc_ids)
-
-    def rank(self, queries):
-        idf         = self.ir.idf
-        doc_vectors = self.ir.doc_vectors
-        doc_norms   = self.ir.doc_norms
-        doc_ids     = self.ir.doc_ids
-        id2idx      = {did: i for i, did in enumerate(doc_ids)}
-        results     = []
-
-        for query in queries:
-            terms = [t for sent in query for t in sent]
-            tf_q  = Counter(terms)
-
-            # ── Initial TF-IDF query vector ──
-            q_vec = {}
-            for t, cnt in tf_q.items():
-                if t in idf:
-                    q_vec[t] = cnt * idf[t]
-            q_norm = math.sqrt(sum(v * v for v in q_vec.values())) or 1e-10
-
-            # ── Initial ranking ──
-            init_scores = []
-            for idx, dv in enumerate(doc_vectors):
-                dn = doc_norms[idx]
-                if dn == 0:
-                    init_scores.append((0.0, doc_ids[idx]))
-                else:
-                    dot = sum(q_vec.get(t, 0) * dv.get(t, 0) for t in q_vec)
-                    init_scores.append((dot / (q_norm * dn), doc_ids[idx]))
-            init_scores.sort(key=lambda x: x[0], reverse=True)
-
-            # ── Centroid of top_k pseudo-relevant docs ──
-            topk_ids = [d for _, d in init_scores[: self.top_k]]
-            centroid = defaultdict(float)
-            for did in topk_ids:
-                for t, v in doc_vectors[id2idx[did]].items():
-                    centroid[t] += v / self.top_k
-
-            # ── Rocchio update ──
-            all_terms = set(q_vec) | set(centroid)
-            q_new = {
-                t: self.alpha * q_vec.get(t, 0) + self.beta * centroid.get(t, 0)
-                for t in all_terms
-            }
-            q_new_norm = math.sqrt(sum(v * v for v in q_new.values())) or 1e-10
-
-            # ── Re-rank with updated query ──
-            new_scores = []
-            for idx, dv in enumerate(doc_vectors):
-                dn = doc_norms[idx]
-                if dn == 0:
-                    new_scores.append((0.0, doc_ids[idx]))
-                else:
-                    dot = sum(q_new.get(t, 0) * dv.get(t, 0) for t in q_new)
-                    new_scores.append((dot / (q_new_norm * dn), doc_ids[idx]))
-            new_scores.sort(key=lambda x: x[0], reverse=True)
-            results.append([d for _, d in new_scores])
-        return results
 
 ### evaluation functions ### 
 
@@ -610,31 +525,13 @@ def main():
           f"{'SIGNIFICANT' if qe_p < 0.05 else 'not significant'} at α=0.05")
     plot_system_metrics(qe_metrics, "WordNet Query Expansion", "qe_metrics.png")
 
-    # Pseudo-Relevance Feedback
-    print("\nPseudo-Relevance Feedback / Rocchio "
-          f"(top_k={PRF_TOPK}, α={PRF_ALPHA}, β={PRF_BETA}) …")
-    prf = PseudoRelevanceFeedback()
-    t0 = time.time()
-    prf.buildIndex(docs_processed, doc_ids)
-    prf_ranked  = prf.rank(queries_processed)
-    prf_time    = time.time() - t0
-    prf_metrics = evaluate_at_all_k(prf_ranked, query_ids, qrels, ev)
-    prf_ap10    = per_query_ap(prf_ranked, query_ids, qrels, K_MAX, ev)
-    prf_zero    = count_zero_result(prf_ranked, query_ids, qrels, ev)
-    prf_p       = wilcoxon_pvalue(prf_ap10, vsm_ap10)
-    print(f"  MAP@10={fmt(prf_metrics['map'][-1])}  MRR@10={fmt(prf_metrics['mrr'][-1])}"
-          f"  nDCG@10={fmt(prf_metrics['ndcg'][-1])}  time={prf_time:.2f}s")
-    print(f"  Wilcoxon vs VSM  p={prf_p:.4f}  "
-          f"{'SIGNIFICANT' if prf_p < 0.05 else 'not significant'} at α=0.05")
-    plot_system_metrics(prf_metrics, "Pseudo-Relevance Feedback (Rocchio)", "prf_metrics.png")
-
+    
     # plot comparison
     all_metrics = {
         "VSM (baseline)":   vsm_metrics,
         "BM25":             bm25_metrics,
         f"LSA (k={best_k})": lsa_metrics,
         "Query Expansion":  qe_metrics,
-        "PRF (Rocchio)":    prf_metrics,
     }
     plot_metric_comparison(all_metrics, "map",  "MAP@k",   "All systems: MAP@k",   "all_map.png")
     plot_metric_comparison(all_metrics, "ndcg", "nDCG@k",  "All systems: nDCG@k",  "all_ndcg.png")
@@ -667,22 +564,15 @@ def main():
                                   fmt(qe_metrics["recall"][-1]),
                                   fmt(qe_metrics["ndcg"][-1]),
                                   str(qe_zero),    f"{qe_time:.2f}"],
-        ["PRF (Rocchio)",         fmt(prf_metrics["map"][-1]),
-                                  fmt(prf_metrics["mrr"][-1]),
-                                  fmt(prf_metrics["precision"][-1]),
-                                  fmt(prf_metrics["recall"][-1]),
-                                  fmt(prf_metrics["ndcg"][-1]),
-                                  str(prf_zero),   f"{prf_time:.2f}"],
-    ]
+   ]
     headers = ["System", "MAP@10", "MRR@10", "P@10", "R@10", "nDCG@10", "Zero", "Time(s)"]
-    print_table(rows, headers, title="Summary – All Systems on Cranfield")
+    print_table(rows, headers, title="Summary: All Systems on Cranfield")
 
     # Wilcoxon p-values table
     pval_rows = [
-        ["BM25 vs VSM",          f"{bm25_p:.4f}", "YES" if bm25_p < 0.05 else "no"],
+        ["BM25 vs VSM", f"{bm25_p:.4f}", "YES" if bm25_p < 0.05 else "no"],
         [f"LSA k={best_k} vs VSM", f"{lsa_p:.4f}", "YES" if lsa_p < 0.05 else "no"],
-        ["QE vs VSM",             f"{qe_p:.4f}",   "YES" if qe_p < 0.05 else "no"],
-        ["PRF vs VSM",            f"{prf_p:.4f}",  "YES" if prf_p < 0.05 else "no"],
+        ["QE vs VSM", f"{qe_p:.4f}",   "YES" if qe_p < 0.05 else "no"],
     ]
     print_table(pval_rows, ["Comparison", "p-value", "Sig. (α=0.05)"],
                 title="Wilcoxon Signed-Rank Tests (AP@10)")
@@ -699,8 +589,6 @@ def main():
                  "k_sweep": {k: v for k, v in lsa_map10.items()}},
         "qe":   {**{m: qe_metrics[m]   for m in qe_metrics},
                  "zero_results": qe_zero,   "time": qe_time,  "p_vs_vsm": qe_p},
-        "prf":  {**{m: prf_metrics[m]  for m in prf_metrics},
-                 "zero_results": prf_zero,  "time": prf_time, "p_vs_vsm": prf_p},
     }
     out_path = os.path.join(OUT_DIR, "results.json")
     with open(out_path, "w") as f:
