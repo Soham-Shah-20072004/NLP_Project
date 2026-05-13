@@ -280,127 +280,134 @@ class Evaluation():
 	# =========================================================================
 	# Average Precision (AP)
 	# =========================================================================
-
-	def queryAveragePrecision(self, query_doc_IDs_ordered, query_id, true_doc_IDs, k):
-		"""
-		Computation of Average Precision of the Information Retrieval System
-		at a given value of k for a single query.
-
-		AP@k = (1 / R) * sum_{i=1}^{k} [doc_i is relevant] * Precision@i
-
-		where R = total number of relevant documents (for recall-based AP).
-
-		Returns
-		-------
-		float
-			AP@k value in [0, 1]
-		"""
-		true_set = set(int(d) for d in true_doc_IDs)
-		if len(true_set) == 0:
-			return 0.0
-
-		relevant_count = 0
-		precision_sum = 0.0
-
-		for i, doc_id in enumerate(query_doc_IDs_ordered[:k]):
-			if int(doc_id) in true_set:
-				relevant_count += 1
-				# Precision at this position
-				precision_at_i = relevant_count / (i + 1)
-				precision_sum += precision_at_i
-
-		# Normalize by the total number of relevant documents
-		avgPrecision = precision_sum / len(true_set)
-		return avgPrecision
+	def averagePrecision(self, retrieved_doc_IDs, true_doc_IDs):
+	    """
+	    Computes Average Precision (AP) for a single query
+	    using the entire ranked list.
+	    """
+	
+	    num_relevant_found = 0
+	    precision_sum = 0.0
+	
+	    for rank, doc_id in enumerate(retrieved_doc_IDs, start=1):
+	
+	        if doc_id in true_doc_IDs:
+	            num_relevant_found += 1
+	
+	            precision_at_rank = (
+	                num_relevant_found / rank
+	            )
+	
+	            precision_sum += precision_at_rank
+	
+	    if len(true_doc_IDs) == 0:
+	        return 0.0
+	
+	    return precision_sum / len(true_doc_IDs)
 
 
-	def meanAveragePrecision(self, doc_IDs_ordered, query_ids, q_rels, k):
-		"""
-		Computation of MAP of the Information Retrieval System
-		at a given value of k, averaged over all queries.
-
-		Returns
-		-------
-		float
-			MAP@k
-		"""
-		aps = []
-		for i, query_id in enumerate(query_ids):
-			true_doc_IDs = self._get_true_doc_IDs(query_id, q_rels)
-			if len(true_doc_IDs) == 0:
-				continue
-			ap = self.queryAveragePrecision(doc_IDs_ordered[i], query_id, true_doc_IDs, k)
-			aps.append(ap)
-
-		meanAveragePrecision = sum(aps) / len(aps) if aps else 0.0
-		return meanAveragePrecision
+	def meanAveragePrecision(
+	    self,
+	    doc_IDs_ordered,
+	    query_ids,
+	    q_rels
+	):
+	    """
+	    Computes true MAP over all queries
+	    using the full ranked retrieval list.
+	    """
+	
+	    average_precisions = []
+	
+	    for i, query_id in enumerate(query_ids):
+	
+	        true_doc_IDs = self._get_true_doc_IDs(
+	            query_id,
+	            q_rels
+	        )
+	
+	        if len(true_doc_IDs) == 0:
+	            continue
+	
+	        ap = self.averagePrecision(
+	            doc_IDs_ordered[i],
+	            true_doc_IDs
+	        )
+	
+	        average_precisions.append(ap)
+	
+	    if len(average_precisions) == 0:
+	        return 0.0
+	
+	    return sum(average_precisions) / len(average_precisions)
 
 	# =========================================================================
-	# Reciprocal Rank (RR) and MRR
+# Reciprocal Rank (RR) and MRR
+# =========================================================================
+
 	# =========================================================================
-
-	def queryReciprocalRank(self, query_doc_IDs_ordered, query_id, true_doc_IDs, k):
-		"""
-		Computation of Reciprocal Rank for a single query.
-
-		RR = 1 / rank_of_first_relevant_document
-		Returns 0 if no relevant document found in top-k.
-
-		Parameters
-		----------
-		query_doc_IDs_ordered : list
-			Ranked document IDs
-		query_id : int
-			Query ID
-		true_doc_IDs : set or list
-			Relevant document IDs
-		k : int
-			Cut-off rank
-
-		Returns
-		-------
-		float
-			Reciprocal rank value in (0, 1]
-		"""
-		true_set = set(int(d) for d in true_doc_IDs)
-
-		for i, doc_id in enumerate(query_doc_IDs_ordered[:k]):
-			if int(doc_id) in true_set:
-				# Rank is 1-indexed
-				reciprocalRank = 1.0 / (i + 1)
-				return reciprocalRank
-
-		# No relevant document found in top-k
-		return 0.0
-
-
-	def meanReciprocalRank(self, doc_IDs_ordered, query_ids, qrels, k):
-		"""
-		Computation of Mean Reciprocal Rank (MRR) averaged over all queries.
-
-		Parameters
-		----------
-		doc_IDs_ordered : list of lists
-			Ranked document lists for each query
-		query_ids : list
-			Query IDs
-		qrels : list
-			Relevance judgments
-		k : int
-			Cut-off rank
-
-		Returns
-		-------
-		float
-			MRR value in [0, 1]
-		"""
-		rrs = []
-		for i, query_id in enumerate(query_ids):
-			true_doc_IDs = self._get_true_doc_IDs(query_id, qrels)
-			if len(true_doc_IDs) == 0:
-				continue
-			rr = self.queryReciprocalRank(doc_IDs_ordered[i], query_id, true_doc_IDs, k)
-			rrs.append(rr)
-
-		meanReciprocalRank = sum(rrs) / len(rrs) if rrs else 0.0
-		return meanReciprocalRank
+# Reciprocal Rank (RR) and MRR
+# =========================================================================
+	
+	def queryReciprocalRank(
+	    self,
+	    query_doc_IDs_ordered,
+	    true_doc_IDs
+	):
+	    """
+	    Computes Reciprocal Rank (RR) for a single query
+	    using the full ranked list.
+	
+	    RR = 1 / rank of first relevant document
+	    """
+	
+	    true_set = set(int(d) for d in true_doc_IDs)
+	
+	    for rank, doc_id in enumerate(
+	        query_doc_IDs_ordered,
+	        start=1
+	    ):
+	
+	        if int(doc_id) in true_set:
+	            return 1.0 / rank
+	
+	    return 0.0
+	
+	
+	def meanReciprocalRank(
+	    self,
+	    doc_IDs_ordered,
+	    query_ids,
+	    qrels
+	):
+	    """
+	    Computes true Mean Reciprocal Rank (MRR)
+	    over all queries using full rankings.
+	    """
+	
+	    reciprocal_ranks = []
+	
+	    for i, query_id in enumerate(query_ids):
+	
+	        true_doc_IDs = self._get_true_doc_IDs(
+	            query_id,
+	            qrels
+	        )
+	
+	        if len(true_doc_IDs) == 0:
+	            continue
+	
+	        rr = self.queryReciprocalRank(
+	            doc_IDs_ordered[i],
+	            true_doc_IDs
+	        )
+	
+	        reciprocal_ranks.append(rr)
+	
+	    if len(reciprocal_ranks) == 0:
+	        return 0.0
+	
+	    return (
+	        sum(reciprocal_ranks)
+	        / len(reciprocal_ranks)
+	    )
